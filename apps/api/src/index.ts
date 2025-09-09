@@ -37,7 +37,10 @@ app.get('/avatar.html', (_req, res) => {
 
 const port = process.env.PORT || 4000;
 
-// Try to use HTTPS with generated certificates
+console.log(`[api] Starting server on port ${port}...`);
+console.log(`[api] Environment: ${process.env.NODE_ENV || 'development'}`);
+
+// Try to use HTTPS with generated certificates, fallback to HTTP for Railway
 try {
   const httpsOptions = {
     key: readFileSync(path.join(__dirname, '../certs/server.key')),
@@ -47,22 +50,20 @@ try {
   const server = https.createServer(httpsOptions, app);
 
   server.listen(port, '0.0.0.0', () => {
-    // eslint-disable-next-line no-console
-    console.log(`[api] listening on https://0.0.0.0:${port}`);
-    console.log(`[api] accessible from Android emulator at https://10.0.2.2:${port}`);
+    console.log(`[api] ✅ HTTPS server listening on https://0.0.0.0:${port}`);
     console.log(`[api] HTTPS enabled for WebRTC compatibility`);
-    console.log(`[api] Note: Browser will show security warning for self-signed certificate - click "Advanced" and "Proceed"`);
+    console.log(`[api] Health check: /health`);
+    console.log(`[api] Avatar interface: /avatar.html`);
   });
 } catch (error) {
-  console.log('[api] HTTPS certificates not found, falling back to HTTP...');
-  console.log('[api] Run ./generate-certs.sh to enable HTTPS');
+  console.log('[api] ⚠️  HTTPS certificates not found, using HTTP for Railway...');
   
-  // Fallback to HTTP
+  // Fallback to HTTP (required for Railway)
   app.listen(port, '0.0.0.0', () => {
-    // eslint-disable-next-line no-console
-    console.log(`[api] listening on http://0.0.0.0:${port}`);
-    console.log(`[api] accessible from Android emulator at http://10.0.2.2:${port}`);
-    console.log(`[api] WARNING: HTTP may not work with WebRTC in some browsers`);
+    console.log(`[api] ✅ HTTP server listening on http://0.0.0.0:${port}`);
+    console.log(`[api] Health check: /health`);
+    console.log(`[api] Avatar interface: /avatar.html`);
+    console.log(`[api] Note: Railway provides HTTPS proxy automatically`);
   });
 }
 
