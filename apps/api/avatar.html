@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>HeyGen Streaming API LiveKit (V2)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  </head>
+
+  <body class="bg-gray-100 p-5 font-sans">
+    <div class="max-w-3xl mx-auto bg-white p-5 rounded-lg shadow-md">
+      <div class="flex flex-wrap gap-2.5 mb-5">
+        <input
+          id="avatarID"
+          type="text"
+          placeholder="Avatar ID"
+          value="Wayne_20240711"
+          class="flex-1 min-w-[200px] p-2 border border-gray-300 rounded-md"
+        />
+        <input
+          id="voiceID"
+          type="text"
+          placeholder="Voice ID"
+          class="flex-1 min-w-[200px] p-2 border border-gray-300 rounded-md"
+        />
+        <button
+          id="startBtn"
+          class="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Start
+        </button>
+        <button
+          id="closeBtn"
+          class="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors"
+        >
+          Close
+        </button>
+      </div>
+
+      <div class="flex flex-wrap gap-2.5 mb-5">
+        <input
+          id="taskInput"
+          type="text"
+          placeholder="Enter text for avatar to speak"
+          class="flex-1 min-w-[200px] p-2 border border-gray-300 rounded-md"
+        />
+        <button
+          id="talkBtn"
+          class="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors"
+        >
+          Talk (LLM)
+        </button>
+        <button
+          id="repeatBtn"
+          class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
+        >
+          Repeat
+        </button>
+      </div>
+
+      <video
+        id="mediaElement"
+        class="w-full max-h-[400px] border rounded-lg my-5"
+        autoplay
+        muted
+        playsinline
+      ></video>
+
+      <div
+        id="status"
+        class="p-2.5 bg-gray-50 border border-gray-300 rounded-md h-[100px] overflow-y-auto font-mono text-sm"
+      ></div>
+    </div>
+
+    <script>
+      // Configuration
+      const API_CONFIG = {
+        apiKey: "YOUR_HEYGEN_API_KEY_HERE",
+        serverUrl: "https://api.heygen.com",
+      };
+
+      // Global variables
+      let sessionInfo = null;
+      let room = null;
+      let mediaStream = null;
+      let webSocket = null;
+      let sessionToken = null;
+
+      // DOM Elements
+      const statusElement = document.getElementById("status");
+      const mediaElement = document.getElementById("mediaElement");
+      const avatarID = document.getElementById("avatarID");
+      const voiceID = document.getElementById("voiceID");
+      const taskInput = document.getElementById("taskInput");
+
+      // Helper function to update status
+      function updateStatus(message) {
+        const timestamp = new Date().toLocaleTimeString();
+        statusElement.innerHTML += `[${timestamp}] ${message}<br>`;
+        statusElement.scrollTop = statusElement.scrollHeight;
+      }
+
+      // Helper function to log errors
+      function logError(error, context) {
+        const timestamp = new Date().toLocaleTimeString();
+        statusElement.innerHTML += `<span style="color: red;">[${timestamp}] ERROR in ${context}: ${error.message || error}<br></span>`;
+        statusElement.scrollTop = statusElement.scrollHeight;
+        console.error(`Error in ${context}:`, error);
+      }
+
+      // Helper function to log objects
+      function logObject(obj, name) {
+        const timestamp = new Date().toLocaleTimeString();
+        statusElement.innerHTML += `<span style="color: blue;">[${timestamp}] ${name}: ${JSON.stringify(obj, null, 2)}<br></span>`;
+        statusElement.scrollTop = statusElement.scrollHeight;
+        console.log(`${name}:`, obj);
+      }
+
+      // Get session token
+      async function getSessionToken() {
+        try {
+          updateStatus("Starting token creation...");
+          logObject(API_CONFIG, "API Config");
+
+          const response = await fetch(
+            `${API_CONFIG.serverUrl}/v1/streaming.create_token`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Api-Key": API_CONFIG.apiKey,
+              },
+            }
+          );
+
+          updateStatus(`Token response status: ${response.status}`);
+          logObject(Object.fromEntries(response.headers.entries()), "Token response headers");
+
+          const data = await response.json();
+          logObject(data, "Token Response");
+
+          if (data.error) {
+            throw new Error(data.error);
+          }
+
+          sessionToken = data.data.token;
+          updateStatus("Session token obtained successfully");
+        } catch (error) {
+          logError(error, "getSessionToken");
+          throw error;
+        }
+      }
+
+      // Connect WebSocket
+      async function connectWebSocket(sessionId) {
+        try {
+          updateStatus("Connecting WebSocket...");
+
+          const params = new URLSearchParams({
+            session_id: sessionId,
+            session_token: sessionToken,
+            silence_response: false,
+            opening_text: "Hello, how can I help you?",
+            stt_language: "en",
+          });
+
+          const wsUrl = `wss://${
+            new URL(API_CONFIG.serverUrl).hostname
+          }/v1/ws/streaming.chat?${params}`;
+
+          updateStatus(`WebSocket URL: ${wsUrl}`);
+          logObject(Object.fromEntries(params.entries()), "WebSocket Params");
+
+          webSocket = new WebSocket(wsUrl);
+
+          // Handle WebSocket events
+          webSocket.addEventListener("message", (event) => {
+            const eventData = JSON.parse(event.data);
+            updateStatus(`WebSocket message: ${JSON.stringify(eventData)}`);
+            console.log("Raw WebSocket event:", eventData);
+          });
+
+          webSocket.addEventListener("open", () => {
+            updateStatus("WebSocket connected successfully");
+          });
+
+          webSocket.addEventListener("error", (error) => {
+            logError(error, "WebSocket");
+          });
+
+          webSocket.addEventListener("close", () => {
+            updateStatus("WebSocket closed");
+          });
+        } catch (error) {
+          logError(error, "connectWebSocket");
+          throw error;
+        }
+      }
+
+      // Create new session
+      async function createNewSession() {
+        try {
+          updateStatus("Creating new session...");
+
+          if (!sessionToken) {
+            updateStatus("No session token, getting one...");
+            await getSessionToken();
+          }
+
+          const requestBody = {
+            quality: "low",
+            avatar_name: avatarID.value,
+            voice: {
+              voice_id: voiceID.value,
+              rate: 1.0,
+            },
+            version: "v2"
+          };
+
+          updateStatus(`Session request body: ${JSON.stringify(requestBody)}`);
+          updateStatus(`Using avatar: ${avatarID.value}, voice: ${voiceID.value}`);
+
+          const response = await fetch(
+            `${API_CONFIG.serverUrl}/v1/streaming.new`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${sessionToken}`,
+              },
+              body: JSON.stringify(requestBody),
+            }
+          );
+
+          updateStatus(`Session response status: ${response.status}`);
+          logObject(Object.fromEntries(response.headers.entries()), "Session response headers");
+
+          const data = await response.json();
+          logObject(data, "Session Response");
+
+          if (data.code !== 100) {
+            throw new Error(`Session creation failed: ${data.message}`);
+          }
+
+          sessionInfo = data.data;
+          updateStatus("Session created successfully");
+          
+          // Add 5-second delay after session creation
+          updateStatus("Waiting 5 seconds after session creation...");
+          await new Promise(resolve => setTimeout(resolve, 5000));
+
+          // Create LiveKit Room
+          updateStatus("Creating LiveKit room...");
+          logObject(typeof LivekitClient, "LivekitClient available");
+
+          room = new LivekitClient.Room({
+            adaptiveStream: true,
+            dynacast: true,
+            videoCaptureDefaults: {
+              resolution: LivekitClient.VideoPresets.h720.resolution,
+            },
+          });
+
+          updateStatus("LiveKit room created successfully");
+          
+          // Add 5-second delay after room creation
+          updateStatus("Waiting 5 seconds after room creation...");
+          await new Promise(resolve => setTimeout(resolve, 5000));
+
+          // Handle room events
+          room.on(LivekitClient.RoomEvent.DataReceived, (message) => {
+            const data = new TextDecoder().decode(message);
+            const parsedData = JSON.parse(data);
+            updateStatus(`Room data received: ${JSON.stringify(parsedData)}`);
+            console.log("Room message:", parsedData);
+          });
+
+          // Handle media streams - separate video and audio handling
+          updateStatus("Setting up media stream handling...");
+
+          room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
+            updateStatus(`Track subscribed: ${track.kind} - ${track.sid}`);
+            logObject(track, "Track Details");
+
+            if (track.kind === 'video') {
+              const ms = new MediaStream([track.mediaStreamTrack]);
+              mediaElement.srcObject = ms;
+              mediaElement.play().catch(() => {
+                updateStatus("Video autoplay blocked, user interaction required");
+              });
+              updateStatus('Video track attached immediately');
+            }
+            
+            if (track.kind === 'audio') {
+              const a = new Audio();
+              a.autoplay = true;
+              a.playsInline = true;
+              a.srcObject = new MediaStream([track.mediaStreamTrack]);
+              document.body.appendChild(a);
+              updateStatus('Audio track attached separately');
+            }
+          });
+
+          // Handle media stream removal
+          room.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track) => {
+            updateStatus(`${track.kind} track unsubscribed`);
+            const mediaTrack = track.mediaStreamTrack;
+            if (mediaTrack) {
+              mediaStream.removeTrack(mediaTrack);
+            }
+          });
+
+          // Handle room connection state changes
+          room.on(LivekitClient.RoomEvent.Disconnected, (reason) => {
+            updateStatus(`Room disconnected: ${reason}`);
+          });
+
+          room.on(LivekitClient.RoomEvent.Connected, () => {
+            updateStatus("Room connected successfully");
+          });
+
+          // Handle stream resume to prevent silent freezing
+          room.on(LivekitClient.RoomEvent.TrackStreamStateChanged, (pub, state) => {
+            updateStatus(`Stream state changed: ${pub.trackSid} -> ${state}`);
+            if (pub.kind === 'video') {
+              mediaElement.play().catch(() => {
+                updateStatus("Video resume play blocked, user interaction required");
+              });
+            }
+          });
+
+          room.on(LivekitClient.RoomEvent.Reconnected, () => {
+            updateStatus("Room reconnected, resuming video playback");
+            mediaElement.play().catch(() => {
+              updateStatus("Video resume play blocked after reconnection");
+            });
+          });
+
+          // Prepare connection
+          updateStatus(`Preparing connection to: ${sessionInfo.url}`);
+          updateStatus(`Using access token: ${sessionInfo.access_token.substring(0, 20)}...`);
+
+          await room.prepareConnection(sessionInfo.url, sessionInfo.access_token);
+          updateStatus("Connection prepared successfully");
+
+          // Connect WebSocket after room preparation
+          await connectWebSocket(sessionInfo.session_id);
+          updateStatus("Session created successfully");
+        } catch (error) {
+          logError(error, "createNewSession");
+          throw error;
+        }
+      }
+
+      // Start streaming session
+      async function startStreamingSession() {
+        try {
+          updateStatus("Starting streaming session...");
+
+          const startResponse = await fetch(
+            `${API_CONFIG.serverUrl}/v1/streaming.start`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${sessionToken}`,
+              },
+              body: JSON.stringify({
+                session_id: sessionInfo.session_id,
+              }),
+            }
+          );
+
+          updateStatus(`Streaming start response status: ${startResponse.status}`);
+          const startData = await startResponse.json();
+          logObject(startData, "Streaming Start Response");
+
+          if (startData.code !== 100) {
+            throw new Error(`Streaming start failed: ${startData.message}`);
+          }
+
+          // Connect to LiveKit room
+          updateStatus("Connecting to LiveKit room...");
+          await room.connect(sessionInfo.url, sessionInfo.access_token);
+          updateStatus("Connected to room successfully");
+          
+          // Add 5-second delay after room connection
+          updateStatus("Waiting 5 seconds after room connection...");
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          updateStatus("Streaming started successfully");
+
+          // Add video event listeners for debugging
+          mediaElement.addEventListener('loadstart', () => {
+            updateStatus('Video: loadstart event');
+          });
+
+          mediaElement.addEventListener('loadedmetadata', () => {
+            updateStatus(`Video: loadedmetadata - duration: ${mediaElement.duration}, dimensions: ${mediaElement.videoWidth}x${mediaElement.videoHeight}`);
+          });
+
+          mediaElement.addEventListener('loadeddata', () => {
+            updateStatus('Video: loadeddata event');
+          });
+
+          mediaElement.addEventListener('canplay', () => {
+            updateStatus('Video: canplay event');
+          });
+
+          mediaElement.addEventListener('play', () => {
+            updateStatus('Video: play event');
+            updateStatus('Video playback started successfully');
+          });
+
+          mediaElement.addEventListener('pause', () => {
+            updateStatus('Video: pause event');
+          });
+
+          mediaElement.addEventListener('error', (e) => {
+            logError(e, 'Video element');
+          });
+
+          // Add 5-second delay after setting up video event listeners
+          updateStatus("Waiting 5 seconds after setting up video listeners...");
+          await new Promise(resolve => setTimeout(resolve, 5000));
+
+          // Try to play the video
+          try {
+            await mediaElement.play();
+            updateStatus("Video play attempt completed");
+          } catch (playError) {
+            logError(playError, 'Video play');
+          }
+
+          // Add 5-second delay after video play attempt
+          updateStatus("Waiting 5 seconds after video play attempt...");
+          await new Promise(resolve => setTimeout(resolve, 5000));
+
+        } catch (error) {
+          logError(error, "startStreamingSession");
+          throw error;
+        }
+      }
+
+      // Send text to avatar
+      async function sendText(text, taskType = "talk") {
+        try {
+          if (!sessionInfo) {
+            updateStatus("No active session");
+            return;
+          }
+
+          updateStatus(`Sending text (${taskType}): ${text}`);
+          
+          // Add 5-second delay before sending text
+          updateStatus("Waiting 5 seconds before sending text...");
+          await new Promise(resolve => setTimeout(resolve, 5000));
+
+          const response = await fetch(
+            `${API_CONFIG.serverUrl}/v1/streaming.task`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${sessionToken}`,
+              },
+              body: JSON.stringify({
+                session_id: sessionInfo.session_id,
+                text: text,
+                task_type: taskType,
+              }),
+            }
+          );
+
+          const data = await response.json();
+          if (data.code !== 100) {
+            throw new Error(`Task failed: ${data.message}`);
+          }
+
+          updateStatus(`Sent text (${taskType}): ${text}`);
+          
+          // Add 5-second delay after sending text
+          updateStatus("Waiting 5 seconds after sending text...");
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        } catch (error) {
+          logError(error, "sendText");
+        }
+      }
+
+      // Close session
+      async function closeSession() {
+        try {
+          if (!sessionInfo) {
+            updateStatus("No active session");
+            return;
+          }
+
+          updateStatus("Closing session...");
+
+          const response = await fetch(
+            `${API_CONFIG.serverUrl}/v1/streaming.stop`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${sessionToken}`,
+              },
+              body: JSON.stringify({
+                session_id: sessionInfo.session_id,
+              }),
+            }
+          );
+
+          const data = await response.json();
+          logObject(data, "Close Session Response");
+
+          // Close WebSocket
+          if (webSocket) {
+            webSocket.close();
+            updateStatus("WebSocket closed");
+          }
+
+          // Disconnect from LiveKit room
+          if (room) {
+            room.disconnect();
+            updateStatus("Room disconnected");
+          }
+
+          mediaElement.srcObject = null;
+          sessionInfo = null;
+          room = null;
+          mediaStream = null;
+          sessionToken = null;
+
+          document.querySelector("#startBtn").disabled = false;
+          updateStatus("Session closed");
+        } catch (error) {
+          logError(error, "closeSession");
+        }
+      }
+
+      // Event listeners
+      document.getElementById("startBtn").addEventListener("click", async () => {
+        try {
+          updateStatus("=== START BUTTON CLICKED ===");
+          updateStatus(`Selected Avatar: ${avatarID.value}`);
+          updateStatus(`Voice ID: ${voiceID.value}`);
+
+          document.querySelector("#startBtn").disabled = true;
+          
+          // Add 5-second delay before starting session creation
+          updateStatus("Waiting 5 seconds before starting session creation...");
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          await createNewSession();
+          
+          // Add 5-second delay before starting streaming
+          updateStatus("Waiting 5 seconds before starting streaming...");
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          await startStreamingSession();
+        } catch (error) {
+          logError(error, "Start button");
+          document.querySelector("#startBtn").disabled = false;
+        }
+      });
+
+      document.getElementById("closeBtn").addEventListener("click", closeSession);
+
+      document.getElementById("talkBtn").addEventListener("click", () => {
+        const text = taskInput.value.trim();
+        if (text) {
+          sendText(text, "talk");
+        }
+      });
+
+      document.getElementById("repeatBtn").addEventListener("click", () => {
+        const text = taskInput.value.trim();
+        if (text) {
+          sendText(text, "repeat");
+        }
+      });
+
+      // Initialize
+      updateStatus("=== INITIALIZATION ===");
+      updateStatus("Ready to start streaming");
+      logObject(typeof LivekitClient, "LivekitClient available");
+      logObject(API_CONFIG, "API Config");
+      updateStatus("=== INITIALIZATION COMPLETE ===");
+    </script>
+  </body>
+</html>
