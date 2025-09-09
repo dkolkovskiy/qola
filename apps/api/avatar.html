@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <title>HeyGen Streaming API LiveKit (V2)</title>
+    <title>HeyGen Streaming API LiveKit (V2) - Version 2.1.0</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
     <meta charset="UTF-8" />
@@ -10,6 +10,14 @@
 
   <body class="bg-gray-100 p-5 font-sans">
     <div class="max-w-3xl mx-auto bg-white p-5 rounded-lg shadow-md">
+      <!-- Version and Status Header -->
+      <div class="mb-5 p-3 bg-blue-50 border border-blue-200 rounded-md">
+        <div class="flex justify-between items-center">
+          <h2 class="text-lg font-semibold text-blue-800">HeyGen Avatar v2.1.0</h2>
+          <span id="connectionStatus" class="px-2 py-1 text-xs rounded-full bg-gray-200 text-gray-700">Initializing...</span>
+        </div>
+        <p class="text-sm text-blue-600 mt-1">Features: Video Pre-config + Network Debug + Fallback Detection</p>
+      </div>
       <div class="flex flex-wrap gap-2.5 mb-5">
         <input
           id="avatarID"
@@ -86,6 +94,13 @@
       let mediaStream = null;
       let webSocket = null;
       let sessionToken = null;
+      
+      // Version 2.1.0 - New features variables
+      let networkMonitor = null;
+      let fallbackDetector = null;
+      let videoFrozenCheckInterval = null;
+      let connectionQuality = 'unknown';
+      let lastVideoFrame = null;
 
       // DOM Elements
       const statusElement = document.getElementById("status");
@@ -93,6 +108,7 @@
       const avatarID = document.getElementById("avatarID");
       const voiceID = document.getElementById("voiceID");
       const taskInput = document.getElementById("taskInput");
+      const connectionStatus = document.getElementById("connectionStatus");
 
       // Helper function to update status
       function updateStatus(message) {
@@ -116,6 +132,255 @@
         statusElement.scrollTop = statusElement.scrollHeight;
         console.log(`${name}:`, obj);
       }
+
+      // =====================================================
+      // VERSION 2.1.0 NEW FEATURES - Options 6, 7, 8
+      // =====================================================
+
+      // Option 6: Video Element Pre-configuration
+      function aggressiveVideoPreconfig() {
+        updateStatus("🎥 OPTION 6: Aggressive Video Pre-configuration");
+        
+        // Set all possible video attributes for maximum compatibility
+        mediaElement.setAttribute('autoplay', '');
+        mediaElement.setAttribute('playsinline', '');
+        mediaElement.setAttribute('muted', '');
+        mediaElement.setAttribute('controls', 'controls');
+        mediaElement.setAttribute('preload', 'auto');
+        mediaElement.setAttribute('webkit-playsinline', '');
+        mediaElement.setAttribute('x5-video-player-type', 'h5');
+        mediaElement.setAttribute('x5-video-player-fullscreen', 'true');
+        
+        // Force video dimensions
+        mediaElement.style.width = '100%';
+        mediaElement.style.height = 'auto';
+        mediaElement.style.maxHeight = '400px';
+        mediaElement.style.backgroundColor = '#000000';
+        
+        // Create a dummy video source to "prime" the video element
+        const dummyCanvas = document.createElement('canvas');
+        dummyCanvas.width = 640;
+        dummyCanvas.height = 480;
+        const ctx = dummyCanvas.getContext('2d');
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(0, 0, 640, 480);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '24px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Preparing Avatar...', 320, 240);
+        
+        // Convert canvas to video stream temporarily
+        const dummyStream = dummyCanvas.captureStream(1);
+        mediaElement.srcObject = dummyStream;
+        
+        // Try to play dummy video to prime autoplay
+        mediaElement.play().then(() => {
+          updateStatus("✅ Video element primed with dummy stream");
+          // Clear dummy stream after a short delay
+          setTimeout(() => {
+            if (mediaElement.srcObject === dummyStream) {
+              mediaElement.srcObject = null;
+            }
+          }, 1000);
+        }).catch(error => {
+          updateStatus("⚠️ Video priming failed: " + error.message);
+        });
+        
+        updateStatus("✅ Video element pre-configured aggressively");
+      }
+
+      // Option 7: Network Debugging Approach  
+      function initNetworkMonitoring() {
+        updateStatus("🌐 OPTION 7: Network Debugging & Monitoring");
+        
+        networkMonitor = {
+          connectionType: 'unknown',
+          effectiveType: 'unknown',
+          downlink: 0,
+          rtt: 0,
+          saveData: false
+        };
+        
+        // Check navigator.connection if available
+        if (navigator.connection) {
+          const conn = navigator.connection;
+          networkMonitor.connectionType = conn.type || 'unknown';
+          networkMonitor.effectiveType = conn.effectiveType || 'unknown';
+          networkMonitor.downlink = conn.downlink || 0;
+          networkMonitor.rtt = conn.rtt || 0;
+          networkMonitor.saveData = conn.saveData || false;
+          
+          updateStatus(`📡 Connection: ${networkMonitor.effectiveType}, Downlink: ${networkMonitor.downlink}Mbps, RTT: ${networkMonitor.rtt}ms`);
+          
+          // Monitor connection changes
+          conn.addEventListener('change', () => {
+            networkMonitor.effectiveType = conn.effectiveType;
+            networkMonitor.downlink = conn.downlink;
+            networkMonitor.rtt = conn.rtt;
+            updateStatus(`🔄 Connection changed: ${networkMonitor.effectiveType}, ${networkMonitor.downlink}Mbps`);
+            updateConnectionStatus();
+          });
+        }
+        
+        // Test network with a simple fetch
+        testNetworkLatency();
+        
+        updateStatus("✅ Network monitoring initialized");
+      }
+      
+      async function testNetworkLatency() {
+        try {
+          const startTime = Date.now();
+          await fetch('https://api.heygen.com/health', { method: 'HEAD', cache: 'no-cache' });
+          const latency = Date.now() - startTime;
+          updateStatus(`🏓 Network latency to HeyGen: ${latency}ms`);
+          
+          if (latency > 1000) {
+            updateStatus("⚠️ High latency detected - may affect streaming quality");
+            connectionQuality = 'poor';
+          } else if (latency > 500) {
+            connectionQuality = 'fair';
+          } else {
+            connectionQuality = 'good';
+          }
+          updateConnectionStatus();
+        } catch (error) {
+          updateStatus("❌ Network test failed: " + error.message);
+          connectionQuality = 'poor';
+          updateConnectionStatus();
+        }
+      }
+
+      // Option 8: Fallback Detection & Auto-restart
+      function initFallbackDetection() {
+        updateStatus("🛡️ OPTION 8: Fallback Detection & Auto-restart");
+        
+        fallbackDetector = {
+          lastFrameTime: Date.now(),
+          frozenThreshold: 10000, // 10 seconds
+          maxRestarts: 3,
+          restartCount: 0,
+          monitoring: false
+        };
+        
+        updateStatus("✅ Fallback detection initialized");
+      }
+      
+      function startVideoFrozenDetection() {
+        if (videoFrozenCheckInterval) {
+          clearInterval(videoFrozenCheckInterval);
+        }
+        
+        fallbackDetector.monitoring = true;
+        fallbackDetector.lastFrameTime = Date.now();
+        
+        videoFrozenCheckInterval = setInterval(() => {
+          if (!fallbackDetector.monitoring || !mediaElement.srcObject) {
+            return;
+          }
+          
+          // Check if video is playing but frozen
+          if (!mediaElement.paused && !mediaElement.ended) {
+            const currentTime = Date.now();
+            const timeSinceLastFrame = currentTime - fallbackDetector.lastFrameTime;
+            
+            if (timeSinceLastFrame > fallbackDetector.frozenThreshold) {
+              updateStatus(`🚨 VIDEO FROZEN DETECTED! ${timeSinceLastFrame}ms since last update`);
+              handleVideoFrozen();
+            }
+          }
+          
+          // Update last frame time (in real implementation, this would be triggered by actual frame updates)
+          if (mediaElement.currentTime > 0 && !mediaElement.paused) {
+            fallbackDetector.lastFrameTime = Date.now();
+          }
+        }, 2000); // Check every 2 seconds
+        
+        updateStatus("🔍 Video frozen detection started");
+      }
+      
+      function handleVideoFrozen() {
+        if (fallbackDetector.restartCount >= fallbackDetector.maxRestarts) {
+          updateStatus("❌ Max restart attempts reached. Manual intervention required.");
+          connectionStatus.textContent = "Failed";
+          connectionStatus.className = "px-2 py-1 text-xs rounded-full bg-red-200 text-red-800";
+          return;
+        }
+        
+        fallbackDetector.restartCount++;
+        updateStatus(`🔄 Attempting automatic restart (${fallbackDetector.restartCount}/${fallbackDetector.maxRestarts})`);
+        
+        // Stop current session
+        stopFallbackDetection();
+        
+        // Restart session after a short delay
+        setTimeout(async () => {
+          try {
+            if (room) {
+              room.disconnect();
+            }
+            if (webSocket) {
+              webSocket.close();
+            }
+            
+            // Clear video
+            mediaElement.srcObject = null;
+            
+            // Restart the session
+            await createNewSession();
+            await startStreamingSession();
+            
+            updateStatus("✅ Automatic restart completed");
+          } catch (error) {
+            updateStatus("❌ Automatic restart failed: " + error.message);
+            logError(error, "Automatic restart");
+          }
+        }, 3000);
+      }
+      
+      function stopFallbackDetection() {
+        if (videoFrozenCheckInterval) {
+          clearInterval(videoFrozenCheckInterval);
+          videoFrozenCheckInterval = null;
+        }
+        fallbackDetector.monitoring = false;
+        updateStatus("⏹️ Fallback detection stopped");
+      }
+      
+      function updateConnectionStatus() {
+        let status = 'Unknown';
+        let className = 'px-2 py-1 text-xs rounded-full bg-gray-200 text-gray-700';
+        
+        if (sessionInfo && room && room.state === 'connected') {
+          switch (connectionQuality) {
+            case 'good':
+              status = 'Connected (Good)';
+              className = 'px-2 py-1 text-xs rounded-full bg-green-200 text-green-800';
+              break;
+            case 'fair':
+              status = 'Connected (Fair)';
+              className = 'px-2 py-1 text-xs rounded-full bg-yellow-200 text-yellow-800';
+              break;
+            case 'poor':
+              status = 'Connected (Poor)';
+              className = 'px-2 py-1 text-xs rounded-full bg-orange-200 text-orange-800';
+              break;
+          }
+        } else if (sessionInfo) {
+          status = 'Connecting...';
+          className = 'px-2 py-1 text-xs rounded-full bg-blue-200 text-blue-800';
+        } else {
+          status = 'Ready';
+          className = 'px-2 py-1 text-xs rounded-full bg-gray-200 text-gray-700';
+        }
+        
+        connectionStatus.textContent = status;
+        connectionStatus.className = className;
+      }
+
+      // =====================================================
+      // END VERSION 2.1.0 NEW FEATURES
+      // =====================================================
 
       // Get session token
       async function getSessionToken() {
@@ -390,6 +655,10 @@
           await new Promise(resolve => setTimeout(resolve, 5000));
           
           updateStatus("Streaming started successfully");
+          
+          // Start video frozen detection (Option 8)
+          startVideoFrozenDetection();
+          updateConnectionStatus();
 
           // Add video event listeners for debugging
           mediaElement.addEventListener('loadstart', () => {
@@ -527,11 +796,18 @@
             updateStatus("Room disconnected");
           }
 
+          // Stop fallback detection (Version 2.1.0)
+          stopFallbackDetection();
+
           mediaElement.srcObject = null;
           sessionInfo = null;
           room = null;
           mediaStream = null;
           sessionToken = null;
+
+          // Reset connection status (Version 2.1.0)
+          connectionQuality = 'unknown';
+          updateConnectionStatus();
 
           document.querySelector("#startBtn").disabled = false;
           updateStatus("Session closed");
@@ -583,10 +859,17 @@
       });
 
       // Initialize
-      updateStatus("=== INITIALIZATION ===");
-      updateStatus("Ready to start streaming");
+      updateStatus("=== INITIALIZATION - VERSION 2.1.0 ===");
+      updateStatus("Ready to start streaming with new features");
       logObject(typeof LivekitClient, "LivekitClient available");
       logObject(API_CONFIG, "API Config");
+      
+      // Initialize new features
+      aggressiveVideoPreconfig();        // Option 6
+      initNetworkMonitoring();           // Option 7  
+      initFallbackDetection();           // Option 8
+      updateConnectionStatus();
+      
       updateStatus("=== INITIALIZATION COMPLETE ===");
     </script>
   </body>
