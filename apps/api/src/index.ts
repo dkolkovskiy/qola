@@ -41,6 +41,29 @@ const port = process.env.PORT || 4000;
 console.log(`[api] Starting server on port ${port}...`);
 console.log(`[api] Environment: ${process.env.NODE_ENV || 'development'}`);
 
+// Add global error handlers to prevent crashes
+process.on('uncaughtException', (error) => {
+  console.error('[api] ❌ Uncaught Exception:', error);
+  console.error('[api] Stack trace:', error.stack);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[api] ❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+// Keep process alive
+process.on('SIGTERM', () => {
+  console.log('[api] 🛑 SIGTERM received, shutting down gracefully...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('[api] 🛑 SIGINT received, shutting down gracefully...');
+  process.exit(0);
+});
+
 // Generate self-signed certificates for HTTPS at runtime
 const generateCertificates = () => {
   const certsDir = path.join(__dirname, '../certs');
@@ -88,6 +111,16 @@ if (certsAvailable) {
       console.log(`[api] Health check: /health`);
       console.log(`[api] Avatar interface: /avatar.html`);
       console.log(`[api] Note: Self-signed certificate - browsers will show security warning`);
+      
+      // Add heartbeat to keep process alive
+      setInterval(() => {
+        console.log(`[api] 💓 Heartbeat - Server running on port ${port}`);
+      }, 60000); // Every minute
+    });
+
+    server.on('error', (error) => {
+      console.error('[api] ❌ HTTPS server error:', error);
+      process.exit(1);
     });
   } catch (error) {
     console.log('[api] ❌ HTTPS server failed to start:', error.message);
@@ -98,6 +131,11 @@ if (certsAvailable) {
       console.log(`[api] Health check: /health`);
       console.log(`[api] Avatar interface: /avatar.html`);
       console.log(`[api] ⚠️  WebRTC may not work properly without HTTPS`);
+      
+      // Add heartbeat to keep process alive
+      setInterval(() => {
+        console.log(`[api] 💓 Heartbeat - Server running on port ${port}`);
+      }, 60000); // Every minute
     });
   }
 } else {
@@ -108,6 +146,11 @@ if (certsAvailable) {
     console.log(`[api] Health check: /health`);
     console.log(`[api] Avatar interface: /avatar.html`);
     console.log(`[api] ⚠️  WebRTC may not work properly without HTTPS`);
+    
+    // Add heartbeat to keep process alive
+    setInterval(() => {
+      console.log(`[api] 💓 Heartbeat - Server running on port ${port}`);
+    }, 60000); // Every minute
   });
 }
 
